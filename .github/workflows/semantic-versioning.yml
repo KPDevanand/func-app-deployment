@@ -1,0 +1,96 @@
+name: Build and deploy Python project to Azure Function App
+
+on:
+    workflow_dispatch:
+        inputs:
+          change_type:
+            description: 'Describe the type of changes made'
+            required: true
+            default: 'minor'
+            type: choice
+            options:
+            - major
+            - minor
+            - patch
+
+
+jobs:
+  fetch-new-tag:
+    # Workflow will be triggered only when these conditions are met
+    if: ${{ (github.ref == 'refs/heads/dev') || (github.ref == 'refs/heads/master') }}
+    runs-on: ubuntu-latest
+    outputs:
+      new-tag: ${{ steps.get-new-tag.outputs.NEW_TAG }}
+    steps:
+      - name : Checkout Repository
+        uses : actions/checkout@v4
+
+        # Update the TAG_VERSION in variables to change the version (Example: from 1.00 -> 2.00)
+      - name : Calculate New Tag
+        id : get-new-tag
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            PREFIX="Prod_"
+            tag_version=$(printf "0.0.0")
+          elif [ "${{ github.ref }}" = "refs/heads/dev" ]; then
+            PREFIX="Dev_"
+            tag_version=$(printf "0.0.0")
+          fi
+
+          INCREMENT_TYPE="${{inputs.change_type}}"
+
+          #### Check if the tag is already present ####
+          git fetch --unshallow --tags
+          echo "Searching for tags like ${PREFIX}${tag_version}"
+          CHECK_TAG=$(git tag -l "${PREFIX}${tag_version}")
+
+          if [ -z "$CHECK_TAG" ]; then
+            NEW_TAG=$tag_version
+          else
+            echo "Searching for tags starting with ${PREFIX}*"
+            
+            LATEST_TAG=$(git tag -l "${PREFIX}"* | sort -V | tail -n 1)
+            NUMERIC_PART=$(echo "$LATEST_TAG" | sed "s/${PREFIX}//")
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$NUMERIC_PART"
+
+            if [ "$INCREMENT_TYPE" == "patch" ]; then
+                PATCH=$((PATCH + 1))
+            elif [ "$INCREMENT_TYPE" == "minor" ]; then
+                MINOR=$((MINOR + 1))
+                PATCH=0
+            elif [ "$INCREMENT_TYPE" == "major" ]; then
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+            fi
+            NEW_TAG="${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_OUTPUT
+          echo "Next tag will be: $NEW_TAG"
+    
+  create-new-tag:
+    runs-on: ubuntu-latest
+    needs: [fetch-new-tag]
+    steps:
+        - name : Checkout Repository
+          uses : actions/checkout@v4
+
+        - name : Set up Git User
+          run: |
+            git config user.name ${{github.actor}}
+            git config user.email "${{github.actor_id}}+${{github.actor}}@users.noreply.github.com"
+
+        - name: Create tag
+          run: |
+            if [ "${{ github.ref }}" = "refs/heads/master" ]; then
+            PREFIX="Prod_"
+            elif [ "${{ github.ref }}" = "refs/heads/dev" ]; then
+            PREFIX="Dev_"
+            fi
+
+            VERSION_NUMBER=${{needs.fetch-new-tag.outputs.new-tag}}
+            TAG_NAME="${PREFIX}${VERSION_NUMBER}"
+
+            git tag -a "${TAG_NAME}" -m "Version ${VERSION_NUMBER}"
+            git push origin "${TAG_NAME}"
